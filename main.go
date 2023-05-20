@@ -111,8 +111,6 @@ func (apiCfg apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Reques
 	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		// an error will be thrown if the JSON is invalid or has the wrong types
-		// any missing fields will simply have their values in the struct set to their zero value
 		respondWithError(w, http.StatusInternalServerError, errors.New("Something went wrong"))
 		return
 	}
@@ -129,13 +127,9 @@ func (apiCfg apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Reques
 	cleanedChirp := censorChirp(listOfBadWords, params.Body, badWordReplacement)
 
 	// create the chirp
-	newChirpId := apiCfg.db.CreateChirp(cleanedChirp)
+	newChirp := apiCfg.db.CreateChirp(cleanedChirp)
 
-	// respond with acknowledgement that chirp created
-	newChirp, err := apiCfg.db.GetChirp(newChirpId)
-	if err != nil {
-		log.Fatal(err)
-	}
+	// respond with acknowledgement that chirp was created
 	respondWithJSON(w, 201, newChirp)
 }
 
@@ -143,6 +137,28 @@ func (apiCfg apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Reques
 func readinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
+}
+
+// create a new user
+func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email string `json:"email"`
+	}
+
+	// decode the user from JSON into go struct
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("Something went wrong"))
+		return
+	}
+	// create the new user
+	email := params.Email
+	newUser := apiCfg.db.CreateNewUser(email)
+
+	// respond with acknowledgement that user was created
+	respondWithJSON(w, 201, newUser)
 }
 
 // main
@@ -195,6 +211,9 @@ func main() {
 		// respond with found chirp matching the given id
 		respondWithJSON(w, 200, chirp)
 	})
+
+	// create a new user
+	apiRouter.Post("/users", apiCfg.createNewUserHandler)
 
 	// ------------ api ---------------
 

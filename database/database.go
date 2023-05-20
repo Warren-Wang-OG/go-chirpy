@@ -10,14 +10,24 @@ import (
 )
 
 type DB struct {
-	path   string
-	mux    *sync.RWMutex
+	path     string
+	mux      *sync.RWMutex
+	dbstruct *DBStructure
+}
+
+type DBStructure struct {
+	Users  map[int]User  `json:"users"`
 	Chirps map[int]Chirp `json:"chirps"`
 }
 
 type Chirp struct {
 	Id   int    `json:"id"`
 	Body string `json:"body"`
+}
+
+type User struct {
+	Id    int    `json:"id"`
+	Email string `json:"email"`
 }
 
 // NewDB creates a new database connection
@@ -31,10 +41,15 @@ func NewDB(path string) (*DB, error) {
 	}
 
 	// create the DB struct
+	dbStruct := DBStructure{
+		Users:  make(map[int]User), // need to allocate mem here to decode JSON into later
+		Chirps: make(map[int]Chirp),
+	}
+
 	db := DB{
-		path:   path,
-		mux:    &sync.RWMutex{},
-		Chirps: make(map[int]Chirp), // need to allocate mem here to decode JSON into later
+		path:     path,
+		mux:      &sync.RWMutex{},
+		dbstruct: &dbStruct,
 	}
 
 	// load the JSON file contents into mem
@@ -43,15 +58,43 @@ func NewDB(path string) (*DB, error) {
 	return &db, nil
 }
 
-// CreateChirp creates a new chirp and saves it to disk
-func (db *DB) CreateChirp(body string) int {
-	// only one Writer at a time to create new Chirps
+// CreateNewUser creates a new user and saves it to disk
+func (db *DB) CreateNewUser(email string) User {
+	// only one Writer at a time can create new Users
 	db.mux.Lock()
 	defer db.mux.Unlock()
 
 	// get new id
 	maxKey := 0
-	for key := range db.Chirps {
+	for key := range db.dbstruct.Users {
+		if key > maxKey {
+			maxKey = key
+		}
+	}
+	newKey := maxKey + 1
+
+	// create and save user
+	newUser := User{
+		Id:    newKey,
+		Email: email,
+	}
+
+	// save newUser to mem and disk
+	db.dbstruct.Users[newKey] = newUser
+	db.writeDB()
+
+	return newUser
+}
+
+// CreateChirp creates a new chirp and saves it to disk
+func (db *DB) CreateChirp(body string) Chirp {
+	// only one Writer at a time can create new Chirps
+	db.mux.Lock()
+	defer db.mux.Unlock()
+
+	// get new id
+	maxKey := 0
+	for key := range db.dbstruct.Chirps {
 		if key > maxKey {
 			maxKey = key
 		}
@@ -59,16 +102,16 @@ func (db *DB) CreateChirp(body string) int {
 	newKey := maxKey + 1
 
 	// create the chirp and add it to the db
-	db.Chirps[newKey] = Chirp{
+	newChirp := Chirp{
 		Id:   newKey,
 		Body: body,
 	}
 
-	// write the new DB from mem to disk
+	// save newChirp to mem and disk
+	db.dbstruct.Chirps[newKey] = newChirp
 	db.writeDB()
 
-	// return the new chirp id
-	return newKey
+	return newChirp
 }
 
 // GetChirp returns a SINGLE chirp from the database, if you know the id
@@ -78,7 +121,7 @@ func (db *DB) GetChirp(id int) (Chirp, error) {
 	defer db.mux.RUnlock()
 
 	// get chirp if exists
-	chirp, ok := db.Chirps[id]
+	chirp, ok := db.dbstruct.Chirps[id]
 	if !ok {
 		return Chirp{}, fmt.Errorf("chirp with ID %d not found", id)
 	}
@@ -95,8 +138,8 @@ func (db *DB) GetChirps() ([]Chirp, error) {
 
 	// get the list of chirps
 	chirps := []Chirp{}
-	for key := range db.Chirps {
-		chirps = append(chirps, db.Chirps[key])
+	for key := range db.dbstruct.Chirps {
+		chirps = append(chirps, db.dbstruct.Chirps[key])
 	}
 
 	// Sort slice of Chirp objects by ID
@@ -122,9 +165,9 @@ func (db *DB) loadDB() error {
 	}
 	defer file.Close()
 
-	// Decode JSON data into DB.Chirps map
+	// Decode JSON data into db.dbstruct
 	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&db.Chirps); err != nil {
+	if err := decoder.Decode(&db.dbstruct); err != nil {
 		return err
 	}
 
@@ -132,7 +175,7 @@ func (db *DB) loadDB() error {
 }
 
 // writeDB writes the database file to disk
-// used by CreateChirps
+// used by CreateChirps and CreateNewUser
 func (db *DB) writeDB() error {
 	// get the JSON file
 	file, err := os.OpenFile(db.path, os.O_WRONLY|os.O_TRUNC, 0644)
@@ -141,10 +184,10 @@ func (db *DB) writeDB() error {
 	}
 	defer file.Close()
 
-	// write the Chirps map to the JSON file
+	// write the dbstruct to the JSON file
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(db.Chirps); err != nil {
+	if err := encoder.Encode(db.dbstruct); err != nil {
 		return err
 	}
 

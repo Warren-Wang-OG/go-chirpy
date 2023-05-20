@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/database"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,11 +27,16 @@ func middlewareCors(next http.Handler) http.Handler {
 	})
 }
 
-// metrics - counting landing page server hits
 type apiConfig struct {
 	fileserverHits int
+	db             *database.DB
 }
 
+type errorBody struct {
+	Error string `json:"error"`
+}
+
+// metrics - counting landing page server hits
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits++
@@ -51,10 +57,6 @@ func (cfg *apiConfig) metricsHandlerFunc(w http.ResponseWriter, r *http.Request)
 
 // -------------
 
-type errorBody struct {
-	Error string `json:"error"`
-}
-
 // wrapper for respondWithJSON for sending errors as the interface used to be converted to json
 func respondWithError(w http.ResponseWriter, code int, err error) {
 	respondWithJSON(w, code, errorBody{Error: err.Error()})
@@ -69,6 +71,16 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 		log.Fatal(err)
 	}
 	w.Write(response)
+}
+
+// return the JSON of all the chirps as a list
+func (apiCfg apiConfig) readChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	allChirps, err := apiCfg.db.GetChirps()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err)
+		log.Fatal(err)
+	}
+	respondWithJSON(w, 200, allChirps)
 }
 
 // censors bad words from a string by replacing them with some censor
@@ -87,14 +99,10 @@ func censorChirp(listOfBadWords []string, s, badWordReplacement string) string {
 	return strings.Join(chirpWords, " ")
 }
 
-// validate new chirps
-func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
+// create new Chirps
+func (apiCfg apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
-	}
-
-	type returnVals struct {
-		Cleaned_body string `json:"cleaned_body"`
 	}
 
 	// decode the chirp from JSON into go struct
@@ -114,17 +122,42 @@ func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// reply with censored chirp
+	// censor chirp
 	badWordReplacement := "****"
 	listOfBadWords := []string{"kerfuffle", "sharbert", "fornax"}
 	cleanedChirp := censorChirp(listOfBadWords, params.Body, badWordReplacement)
-	respondWithJSON(w, http.StatusOK, returnVals{Cleaned_body: cleanedChirp})
+
+	// create the chirp
+	newChirpId := apiCfg.db.CreateChirp(cleanedChirp)
+
+	// respond with acknowledgement that chirp created
+	newChirp, err := apiCfg.db.GetChirp(newChirpId)
+	if err != nil {
+		log.Fatal(err)
+	}
+	respondWithJSON(w, 201, newChirp)
+}
+
+// healthz
+func readinessHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(200)
+	w.Write([]byte("OK"))
 }
 
 // main
 func main() {
 	filepathRoot := "."
-	apiCfg := &apiConfig{fileserverHits: 0}
+	databaseFile := "database.json"
+
+	// create the DB
+	db, err := database.NewDB(databaseFile) // creates and loads the db
+	if err != nil {
+		log.Fatal(err)
+	}
+	apiCfg := &apiConfig{
+		fileserverHits: 0,
+		db:             db,
+	}
 
 	// chi router -- use it to stop extra HTTP methods from working, restrict to GETs
 	r := chi.NewRouter()
@@ -136,12 +169,13 @@ func main() {
 	r.Mount("/api", apiRouter)
 
 	// readiness endpoint
-	apiRouter.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte("OK"))
-	})
+	apiRouter.Get("/healthz", readinessHandler)
 
-	apiRouter.Post("/validate_chirp", validateChirpHandler)
+	// create new chirps
+	apiRouter.Post("/chirps", apiCfg.createChirpHandler)
+
+	// read chirps
+	apiRouter.Get("/chirps", apiCfg.readChirpsHandler)
 
 	// ------------ api ---------------
 

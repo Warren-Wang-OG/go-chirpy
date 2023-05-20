@@ -1,4 +1,5 @@
-module github.com/Warren-Wang-OG/chirpy
+// module github.com/Warren-Wang-OG/chirpy
+module chirpy
 
 go 1.20
 

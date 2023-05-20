@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi"
@@ -73,7 +74,7 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Write(response)
 }
 
-// return the JSON of all the chirps as a list
+// return the JSON of all the Chirps as a list of Chirps
 func (apiCfg apiConfig) readChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	allChirps, err := apiCfg.db.GetChirps()
 	if err != nil {
@@ -174,8 +175,26 @@ func main() {
 	// create new chirps
 	apiRouter.Post("/chirps", apiCfg.createChirpHandler)
 
-	// read chirps
+	// get all chirps
 	apiRouter.Get("/chirps", apiCfg.readChirpsHandler)
+
+	// get a single chirp from id
+	apiRouter.Get("/chirps/{id}", func(w http.ResponseWriter, r *http.Request) {
+		// get chirp id
+		id, err := strconv.Atoi(chi.URLParam(r, "id"))
+		if err != nil {
+			respondWithError(w, 404, err)
+			return
+		}
+		// find the chirp from id if possible
+		chirp, err := apiCfg.db.GetChirp(id)
+		if err != nil {
+			respondWithError(w, 404, err)
+			return
+		}
+		// respond with found chirp matching the given id
+		respondWithJSON(w, 200, chirp)
+	})
 
 	// ------------ api ---------------
 

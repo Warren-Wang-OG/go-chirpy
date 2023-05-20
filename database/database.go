@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"sync"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type DB struct {
@@ -26,8 +28,9 @@ type Chirp struct {
 }
 
 type User struct {
-	Id    int    `json:"id"`
-	Email string `json:"email"`
+	Id       int    `json:"id"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 // NewDB creates a new database connection
@@ -59,31 +62,35 @@ func NewDB(path string) (*DB, error) {
 }
 
 // CreateNewUser creates a new user and saves it to disk
-func (db *DB) CreateNewUser(email string) User {
+func (db *DB) CreateNewUser(user User) User {
 	// only one Writer at a time can create new Users
 	db.mux.Lock()
 	defer db.mux.Unlock()
 
 	// get new id
-	maxKey := 0
-	for key := range db.dbstruct.Users {
-		if key > maxKey {
-			maxKey = key
+	maxId := 0
+	for id := range db.dbstruct.Users {
+		if id > maxId {
+			maxId = id
 		}
 	}
-	newKey := maxKey + 1
+	newId := maxId + 1
 
-	// create and save user
-	newUser := User{
-		Id:    newKey,
-		Email: email,
+	// add in the id
+	user.Id = newId
+
+	// store the hashed password
+	hashedPassBytes, err := bcrypt.GenerateFromPassword([]byte(user.Password), 13)
+	if err != nil {
+		log.Fatal(err)
 	}
+	user.Password = string(hashedPassBytes)
 
 	// save newUser to mem and disk
-	db.dbstruct.Users[newKey] = newUser
+	db.dbstruct.Users[newId] = user
 	db.writeDB()
 
-	return newUser
+	return user
 }
 
 // CreateChirp creates a new chirp and saves it to disk
@@ -93,25 +100,40 @@ func (db *DB) CreateChirp(body string) Chirp {
 	defer db.mux.Unlock()
 
 	// get new id
-	maxKey := 0
-	for key := range db.dbstruct.Chirps {
-		if key > maxKey {
-			maxKey = key
+	maxId := 0
+	for id := range db.dbstruct.Chirps {
+		if id > maxId {
+			maxId = id
 		}
 	}
-	newKey := maxKey + 1
+	newId := maxId + 1
 
 	// create the chirp and add it to the db
 	newChirp := Chirp{
-		Id:   newKey,
+		Id:   newId,
 		Body: body,
 	}
 
 	// save newChirp to mem and disk
-	db.dbstruct.Chirps[newKey] = newChirp
+	db.dbstruct.Chirps[newId] = newChirp
 	db.writeDB()
 
 	return newChirp
+}
+
+// GetUsers returns a list of Users in database
+// no order
+func (db *DB) GetUsers() []User {
+	// lock for Readers
+	db.mux.RLock()
+	defer db.mux.RUnlock()
+
+	users := []User{}
+	for id := range db.dbstruct.Users {
+		users = append(users, db.dbstruct.Users[id])
+	}
+
+	return users
 }
 
 // GetChirp returns a SINGLE chirp from the database, if you know the id
@@ -131,7 +153,7 @@ func (db *DB) GetChirp(id int) (Chirp, error) {
 
 // GetChirps returns all chirps in the database
 // order by id in ascending order
-func (db *DB) GetChirps() ([]Chirp, error) {
+func (db *DB) GetChirps() []Chirp {
 	// lock for Readers
 	db.mux.RLock()
 	defer db.mux.RUnlock()
@@ -147,7 +169,7 @@ func (db *DB) GetChirps() ([]Chirp, error) {
 		return chirps[i].Id < chirps[j].Id
 	})
 
-	return chirps, nil
+	return chirps
 }
 
 // loadDB reads the database file into memory

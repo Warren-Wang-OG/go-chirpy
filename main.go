@@ -4,14 +4,18 @@ import (
 	"chirpy/database"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/go-chi/chi"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // allows cross origin requests
@@ -35,6 +39,11 @@ type apiConfig struct {
 
 type errorBody struct {
 	Error string `json:"error"`
+}
+
+type noPasswordUser struct {
+	Id    int    `json:"id"`
+	Email string `json:"email"`
 }
 
 // metrics - counting landing page server hits
@@ -76,11 +85,7 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 
 // return the JSON of all the Chirps as a list of Chirps
 func (apiCfg apiConfig) readChirpsHandler(w http.ResponseWriter, r *http.Request) {
-	allChirps, err := apiCfg.db.GetChirps()
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, err)
-		log.Fatal(err)
-	}
+	allChirps := apiCfg.db.GetChirps()
 	respondWithJSON(w, 200, allChirps)
 }
 
@@ -133,38 +138,178 @@ func (apiCfg apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Reques
 	respondWithJSON(w, 201, newChirp)
 }
 
-// healthz
+// healthz -- readiness endpoint
 func readinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
 }
 
-// create a new user
-func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Request) {
-	type parameters struct {
-		Email string `json:"email"`
+// check passwords, return true if strong else false
+func isPasswordStrong(password string) bool {
+	// Check length
+	if len(password) < 8 {
+		return false
 	}
 
+	// Check for uppercase letters
+	hasUpper := false
+	for _, c := range password {
+		if unicode.IsUpper(c) {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return false
+	}
+
+	// Check for lowercase letters
+	hasLower := false
+	for _, c := range password {
+		if unicode.IsLower(c) {
+			hasLower = true
+			break
+		}
+	}
+	if !hasLower {
+		return false
+	}
+
+	// Check for digits
+	hasDigit := false
+	for _, c := range password {
+		if unicode.IsDigit(c) {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		return false
+	}
+
+	// Check for special characters
+	hasSpecial := false
+	for _, c := range password {
+		if unicode.IsPunct(c) || unicode.IsSymbol(c) {
+			hasSpecial = true
+			break
+		}
+	}
+	if !hasSpecial {
+		return false
+	}
+
+	// All tests passed
+	return true
+}
+
+// remove the password entry from a user struct, return noPasswordUser struct
+func removePasswordFromUser(user database.User) noPasswordUser {
+	return noPasswordUser{
+		Id:    user.Id,
+		Email: user.Email,
+	}
+}
+
+// create a new user
+func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Request) {
 	// decode the user from JSON into go struct
 	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
+	params := database.User{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, errors.New("Something went wrong"))
 		return
 	}
+
+	// check if email is already being used
+	users := apiCfg.db.GetUsers()
+	for _, user := range users {
+		if params.Email == user.Email {
+			respondWithError(w, http.StatusNotAcceptable, errors.New("email is already in use"))
+			return
+		}
+	}
+
+	// check password strength
+	if !isPasswordStrong(params.Password) {
+		respondWithError(w, http.StatusNotAcceptable, errors.New("password is not strong"))
+		return
+	}
+
 	// create the new user
-	email := params.Email
-	newUser := apiCfg.db.CreateNewUser(email)
+	newUser := apiCfg.db.CreateNewUser(params)
+
+	// remove the hashed password before sending back
+	removedPassUser := removePasswordFromUser(newUser)
 
 	// respond with acknowledgement that user was created
-	respondWithJSON(w, 201, newUser)
+	respondWithJSON(w, 201, removedPassUser)
+}
+
+// login a user
+func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.Request) {
+	// decode the user from JSON into go struct
+	decoder := json.NewDecoder(r.Body)
+	params := database.User{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("Something went wrong"))
+		return
+	}
+
+	enteredEmail := params.Email
+	enteredPassword := params.Password
+
+	// retrieve user by email
+	users := apiCfg.db.GetUsers()
+	foundUserEntry := false
+	userEntryIdx := -1
+	for i, user := range users {
+		if user.Email == enteredEmail {
+			foundUserEntry = true
+			userEntryIdx = i
+			break
+		}
+	}
+
+	if !foundUserEntry {
+		respondWithError(w, http.StatusInternalServerError, errors.New("no user with that email found in db"))
+		return
+	}
+
+	foundUser := users[userEntryIdx]
+
+	// compare the password
+	err = bcrypt.CompareHashAndPassword([]byte(foundUser.Password), []byte(enteredPassword))
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, errors.New("passwords don't match"))
+		return
+	}
+
+	// user entered the right password
+	// remove the password before sending back
+	noPassUser := removePasswordFromUser(foundUser)
+
+	// respond with acknowledgement that user was created
+	respondWithJSON(w, 200, noPassUser)
 }
 
 // main
 func main() {
 	filepathRoot := "."
 	databaseFile := "database.json"
+
+	// if in debug mode, delete the database.json file if it exists
+	dbg := flag.Bool("debug", false, "Enable debug mode")
+	flag.Parse()
+	fmt.Println("Debug mode (delete previous db):", *dbg)
+	if *dbg {
+		e := os.Remove(databaseFile)
+		if e != nil {
+			return
+		}
+	}
 
 	// create the DB
 	db, err := database.NewDB(databaseFile) // creates and loads the db
@@ -188,11 +333,8 @@ func main() {
 	// readiness endpoint
 	apiRouter.Get("/healthz", readinessHandler)
 
-	// create new chirps
-	apiRouter.Post("/chirps", apiCfg.createChirpHandler)
-
-	// get all chirps
-	apiRouter.Get("/chirps", apiCfg.readChirpsHandler)
+	apiRouter.Post("/chirps", apiCfg.createChirpHandler) // create new chirps
+	apiRouter.Get("/chirps", apiCfg.readChirpsHandler)   // get all chirps
 
 	// get a single chirp from id
 	apiRouter.Get("/chirps/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -212,8 +354,9 @@ func main() {
 		respondWithJSON(w, 200, chirp)
 	})
 
-	// create a new user
-	apiRouter.Post("/users", apiCfg.createNewUserHandler)
+	apiRouter.Post("/users", apiCfg.createNewUserHandler) // create a new User
+
+	apiRouter.Post("/login", apiCfg.authenticateUserHandler)
 
 	// ------------ api ---------------
 

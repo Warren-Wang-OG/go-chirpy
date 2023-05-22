@@ -121,6 +121,41 @@ func (db *DB) CreateChirp(body string) Chirp {
 	return newChirp
 }
 
+// UpdateUser updates a user in the database
+func (db *DB) UpdateUser(user User) User {
+	// only one Writer at a time can update Users
+	db.mux.Lock()
+	defer db.mux.Unlock()
+
+	// store the hashed password
+	hashedPassBytes, err := bcrypt.GenerateFromPassword([]byte(user.Password), 13)
+	if err != nil {
+		log.Fatal(err)
+	}
+	user.Password = string(hashedPassBytes)
+
+	// save newUser to mem and disk
+	db.dbstruct.Users[user.Id] = user
+	db.writeDB()
+
+	return user
+}
+
+// GetUser returns a SINGLE user from the database, if you know the id
+func (db *DB) GetUser(id int) (User, error) {
+	// lock for Readers
+	db.mux.RLock()
+	defer db.mux.RUnlock()
+
+	// get user if exists
+	user, ok := db.dbstruct.Users[id]
+	if !ok {
+		return User{}, fmt.Errorf("user with ID %d not found", id)
+	}
+
+	return user, nil
+}
+
 // GetUsers returns a list of Users in database
 // no order
 func (db *DB) GetUsers() []User {

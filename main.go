@@ -12,9 +12,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"unicode"
+	"time"
 
 	"github.com/go-chi/chi"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -35,6 +37,7 @@ func middlewareCors(next http.Handler) http.Handler {
 type apiConfig struct {
 	fileserverHits int
 	db             *database.DB
+	jwtSecret      string
 }
 
 type errorBody struct {
@@ -146,58 +149,58 @@ func readinessHandler(w http.ResponseWriter, r *http.Request) {
 
 // check passwords, return true if strong else false
 func isPasswordStrong(password string) bool {
-	// Check length
-	if len(password) < 8 {
-		return false
-	}
+	// // Check length
+	// if len(password) < 8 {
+	// 	return false
+	// }
 
-	// Check for uppercase letters
-	hasUpper := false
-	for _, c := range password {
-		if unicode.IsUpper(c) {
-			hasUpper = true
-			break
-		}
-	}
-	if !hasUpper {
-		return false
-	}
+	// // Check for uppercase letters
+	// hasUpper := false
+	// for _, c := range password {
+	// 	if unicode.IsUpper(c) {
+	// 		hasUpper = true
+	// 		break
+	// 	}
+	// }
+	// if !hasUpper {
+	// 	return false
+	// }
 
-	// Check for lowercase letters
-	hasLower := false
-	for _, c := range password {
-		if unicode.IsLower(c) {
-			hasLower = true
-			break
-		}
-	}
-	if !hasLower {
-		return false
-	}
+	// // Check for lowercase letters
+	// hasLower := false
+	// for _, c := range password {
+	// 	if unicode.IsLower(c) {
+	// 		hasLower = true
+	// 		break
+	// 	}
+	// }
+	// if !hasLower {
+	// 	return false
+	// }
 
-	// Check for digits
-	hasDigit := false
-	for _, c := range password {
-		if unicode.IsDigit(c) {
-			hasDigit = true
-			break
-		}
-	}
-	if !hasDigit {
-		return false
-	}
+	// // Check for digits
+	// hasDigit := false
+	// for _, c := range password {
+	// 	if unicode.IsDigit(c) {
+	// 		hasDigit = true
+	// 		break
+	// 	}
+	// }
+	// if !hasDigit {
+	// 	return false
+	// }
 
-	// Check for special characters
-	hasSpecial := false
-	for _, c := range password {
-		if unicode.IsPunct(c) || unicode.IsSymbol(c) {
-			hasSpecial = true
-			break
-		}
-	}
-	if !hasSpecial {
-		return false
-	}
+	// // Check for special characters
+	// hasSpecial := false
+	// for _, c := range password {
+	// 	if unicode.IsPunct(c) || unicode.IsSymbol(c) {
+	// 		hasSpecial = true
+	// 		break
+	// 	}
+	// }
+	// if !hasSpecial {
+	// 	return false
+	// }
 
 	// All tests passed
 	return true
@@ -211,8 +214,10 @@ func removePasswordFromUser(user database.User) noPasswordUser {
 	}
 }
 
+// POST /api/users
 // create a new user
 func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Request) {
+
 	// decode the user from JSON into go struct
 	decoder := json.NewDecoder(r.Body)
 	params := database.User{}
@@ -247,11 +252,19 @@ func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Requ
 	respondWithJSON(w, 201, removedPassUser)
 }
 
+// POST /api/login
 // login a user
 func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email              string `json:"email"`
+		Password           string `json:"password"`
+		Expires_in_seconds *int   `json:"expires_in_seconds,omitempty"`
+	}
+
 	// decode the user from JSON into go struct
 	decoder := json.NewDecoder(r.Body)
-	params := database.User{}
+	// params := database.User{}
+	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, errors.New("Something went wrong"))
@@ -288,22 +301,121 @@ func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// user entered the right password
-	// remove the password before sending back
-	noPassUser := removePasswordFromUser(foundUser)
 
-	// respond with acknowledgement that user was created
-	respondWithJSON(w, 200, noPassUser)
+	// create the JWT with expiration time either given from the user or using a default value
+	jwtExpirationTimeSecondsToAdd := 24 * 60 * 60 // 24 hours, in seconds
+	if params.Expires_in_seconds != nil {
+		if *params.Expires_in_seconds <= jwtExpirationTimeSecondsToAdd {
+			jwtExpirationTimeSecondsToAdd = *params.Expires_in_seconds
+		}
+	}
+
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Issuer:    "chirpy",
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(jwtExpirationTimeSecondsToAdd) * time.Second)),
+		Subject:   fmt.Sprintf("%d", foundUser.Id),
+	})
+
+	completeToken, err := jwtToken.SignedString([]byte(apiCfg.jwtSecret))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	type retVal struct {
+		Id    int    `json:"id"`
+		Email string `json:"email"`
+		Token string `json:"token"`
+	}
+
+	respondWithJSON(w, 200, retVal{
+		Id:    foundUser.Id,
+		Email: foundUser.Email,
+		Token: completeToken,
+	})
+}
+
+// PUT /api/users
+// update a user's email and password
+// authenticated endpoint
+func (apiCfg apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request) {
+	// get the JWT
+	authHeader := r.Header.Get("Authorization")
+	splitAuthHeader := strings.Split(authHeader, " ")
+	if len(splitAuthHeader) != 2 {
+		respondWithError(w, http.StatusUnauthorized, errors.New("no token provided"))
+		log.Println("no token provided")
+		return
+	}
+	tokenString := splitAuthHeader[1]
+
+	// validate the JWT
+	claims := &jwt.RegisteredClaims{}
+	keyFunc := func(token *jwt.Token) (interface{}, error) {
+		secret := []byte(apiCfg.jwtSecret)
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+
+		return secret, nil
+	}
+	token, err := jwt.ParseWithClaims(tokenString, claims, keyFunc)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err)
+		log.Println("error parsing token or invalid token")
+		return
+	}
+
+	if token.Valid {
+		log.Println("token is valid, continuing")
+	} else {
+		log.Println("token is invalid, exiting")
+		return
+	}
+
+	// get the user id from the token
+	userId := token.Claims.(*jwt.RegisteredClaims).Subject
+	userIdInt, _ := strconv.Atoi(userId)
+
+	// get the user from the db
+	foundUser, err := apiCfg.db.GetUser(userIdInt)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("could not find user"))
+		return
+	}
+
+	// decode the new user data from JSON into go struct
+	decoder := json.NewDecoder(r.Body)
+	params := database.User{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("error decoding given body"))
+		return
+	}
+
+	// update the user
+	foundUser.Email = params.Email
+	foundUser.Password = params.Password
+	updatedUser := apiCfg.db.UpdateUser(foundUser)
+
+	// remove the hashed password before sending back
+	removedPassUser := removePasswordFromUser(updatedUser)
+
+	// respond with acknowledgement that user was updated
+	respondWithJSON(w, 200, removedPassUser)
 }
 
 // main
 func main() {
 	filepathRoot := "."
 	databaseFile := "database.json"
+	godotenv.Load() // load .env
+	jwtSecret := os.Getenv("JWT_SECRET")
 
 	// if in debug mode, delete the database.json file if it exists
 	dbg := flag.Bool("debug", false, "Enable debug mode")
 	flag.Parse()
-	fmt.Println("Debug mode (delete previous db):", *dbg)
+	log.Println("Debug mode (delete previous db):", *dbg)
 	if *dbg {
 		e := os.Remove(databaseFile)
 		if e != nil {
@@ -319,6 +431,7 @@ func main() {
 	apiCfg := &apiConfig{
 		fileserverHits: 0,
 		db:             db,
+		jwtSecret:      jwtSecret,
 	}
 
 	// chi router -- use it to stop extra HTTP methods from working, restrict to GETs
@@ -355,8 +468,9 @@ func main() {
 	})
 
 	apiRouter.Post("/users", apiCfg.createNewUserHandler) // create a new User
+	apiRouter.Put("/users", apiCfg.updateUserHandler)     // update a User
 
-	apiRouter.Post("/login", apiCfg.authenticateUserHandler)
+	apiRouter.Post("/login", apiCfg.authenticateUserHandler) // authenticate User
 
 	// ------------ api ---------------
 

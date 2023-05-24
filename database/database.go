@@ -18,8 +18,9 @@ type DB struct {
 }
 
 type DBStructure struct {
-	Users  map[int]User  `json:"users"`
-	Chirps map[int]Chirp `json:"chirps"`
+	Users                map[int]User    `json:"users"`
+	Chirps               map[int]Chirp   `json:"chirps"`
+	RevokedRefreshTokens map[string]bool `json:"revoked_refresh_tokens"`
 }
 
 type Chirp struct {
@@ -31,6 +32,25 @@ type User struct {
 	Id       int    `json:"id"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+// CheckRefreshToken checks if a refresh token is revoked
+// returns true if not revoked, false if revoked
+func (db *DB) CheckRefreshTokenIsValid(token string) bool {
+	db.mux.RLock()
+	defer db.mux.RUnlock()
+
+	_, ok := db.dbstruct.RevokedRefreshTokens[token]
+	return !ok
+}
+
+// RevokeRefreshToken adds a refresh token to the revoked list
+func (db *DB) RevokeRefreshToken(token string) {
+	db.mux.Lock()
+	defer db.mux.Unlock()
+
+	db.dbstruct.RevokedRefreshTokens[token] = true
+	db.writeDB()
 }
 
 // NewDB creates a new database connection

@@ -86,8 +86,10 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Write(response)
 }
 
+// GET /api/chirps
 // return the JSON of all the Chirps as a list of Chirps
 func (apiCfg apiConfig) readChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Request: GET /api/chirps")
 	allChirps := apiCfg.db.GetChirps()
 	respondWithJSON(w, 200, allChirps)
 }
@@ -108,8 +110,10 @@ func censorChirp(listOfBadWords []string, s, badWordReplacement string) string {
 	return strings.Join(chirpWords, " ")
 }
 
+// POST /api/chirps
 // create new Chirps
 func (apiCfg apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Request: POST /api/chirps")
 	type parameters struct {
 		Body string `json:"body"`
 	}
@@ -141,8 +145,10 @@ func (apiCfg apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Reques
 	respondWithJSON(w, 201, newChirp)
 }
 
+// POST /api/healthz
 // healthz -- readiness endpoint
 func readinessHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Request: POST /api/healthz")
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
 }
@@ -217,13 +223,13 @@ func removePasswordFromUser(user database.User) noPasswordUser {
 // POST /api/users
 // create a new user
 func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Request) {
-
+	log.Println("Request: POST /api/users")
 	// decode the user from JSON into go struct
 	decoder := json.NewDecoder(r.Body)
 	params := database.User{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, errors.New("Something went wrong"))
+		respondWithError(w, http.StatusInternalServerError, errors.New("decoding json went wrong"))
 		return
 	}
 
@@ -255,10 +261,10 @@ func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Requ
 // POST /api/login
 // login a user
 func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Request: POST /api/login")
 	type parameters struct {
-		Email              string `json:"email"`
-		Password           string `json:"password"`
-		Expires_in_seconds *int   `json:"expires_in_seconds,omitempty"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	// decode the user from JSON into go struct
@@ -303,52 +309,64 @@ func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.R
 	// user entered the right password
 
 	// create the JWT with expiration time either given from the user or using a default value
-	jwtExpirationTimeSecondsToAdd := 24 * 60 * 60 // 24 hours, in seconds
-	if params.Expires_in_seconds != nil {
-		if *params.Expires_in_seconds <= jwtExpirationTimeSecondsToAdd {
-			jwtExpirationTimeSecondsToAdd = *params.Expires_in_seconds
-		}
-	}
+	// create access and refresh tokens
 
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-		Issuer:    "chirpy",
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Issuer:    "chirpy-access",
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(jwtExpirationTimeSecondsToAdd) * time.Second)),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(1) * time.Hour)),
 		Subject:   fmt.Sprintf("%d", foundUser.Id),
 	})
 
-	completeToken, err := jwtToken.SignedString([]byte(apiCfg.jwtSecret))
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Issuer:    "chirpy-refresh",
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(24*60) * time.Hour)),
+		Subject:   fmt.Sprintf("%d", foundUser.Id),
+	})
+
+	completeAccessToken, err := accessToken.SignedString([]byte(apiCfg.jwtSecret))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	completeRefreshToken, err := refreshToken.SignedString([]byte(apiCfg.jwtSecret))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	type retVal struct {
-		Id    int    `json:"id"`
-		Email string `json:"email"`
-		Token string `json:"token"`
+		Id            int    `json:"id"`
+		Email         string `json:"email"`
+		Token         string `json:"token"`         // access token
+		Refresh_token string `json:"refresh_token"` // refresh token
 	}
 
 	respondWithJSON(w, 200, retVal{
-		Id:    foundUser.Id,
-		Email: foundUser.Email,
-		Token: completeToken,
+		Id:            foundUser.Id,
+		Email:         foundUser.Email,
+		Token:         completeAccessToken,
+		Refresh_token: completeRefreshToken,
 	})
 }
 
-// PUT /api/users
-// update a user's email and password
-// authenticated endpoint
-func (apiCfg apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request) {
-	// get the JWT
+// get JWT from the "Authorization" header
+// expects format - Authorization: Bearer <token>
+// where "Authorization" is the header name
+func getJWTFromHeader(r *http.Request) (string, error) {
 	authHeader := r.Header.Get("Authorization")
 	splitAuthHeader := strings.Split(authHeader, " ")
 	if len(splitAuthHeader) != 2 {
-		respondWithError(w, http.StatusUnauthorized, errors.New("no token provided"))
-		log.Println("no token provided")
-		return
+		return "", errors.New("no token provided")
 	}
 	tokenString := splitAuthHeader[1]
+	return tokenString, nil
+}
 
+// validate a JWT based off of the string
+// returns the token if valid, else returns nil
+// can use the token to get the user id
+func (apiCfg apiConfig) validateToken(tokenString string) (*jwt.Token, error) {
 	// validate the JWT
 	claims := &jwt.RegisteredClaims{}
 	keyFunc := func(token *jwt.Token) (interface{}, error) {
@@ -361,15 +379,64 @@ func (apiCfg apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request
 	}
 	token, err := jwt.ParseWithClaims(tokenString, claims, keyFunc)
 	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, err)
-		log.Println("error parsing token or invalid token")
+		log.Println("error parsing token or invalid token", err)
+		return nil, err
+	}
+
+	// if token.Valid {
+	// 	// log.Println("token is valid, continuing")
+	// } else {
+	// 	// log.Println("token is invalid, exiting")
+	// 	return nil, nil
+	// }
+
+	if !token.Valid {
+		return nil, nil
+	}
+	return token, nil
+}
+
+// to avoid more copy pasting, combine getting and validating
+// JWT token, return both the tokenString, token
+func (apiCfg apiConfig) getJWTAndValidate(r *http.Request) (string, *jwt.Token, error) {
+	tokenString, err := getJWTFromHeader(r)
+	if err != nil {
+		return "", nil, err
+	}
+
+	token, err := apiCfg.validateToken(tokenString)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return tokenString, token, nil
+}
+
+// PUT /api/users
+// update a user's email and password
+// authenticated endpoint
+func (apiCfg apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Request: PUT /api/users")
+	// retrieve the validated JWT token
+	_, token, err := apiCfg.getJWTAndValidate(r)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err)
+		log.Println(err)
 		return
 	}
 
-	if token.Valid {
-		log.Println("token is valid, continuing")
-	} else {
-		log.Println("token is invalid, exiting")
+	// check the issuer to see if whether access vs refresh token
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("could not get issuer from token"))
+		log.Println("could not get issuer from token")
+		return
+	}
+
+	// reject if not an access token
+	if issuer != "chirpy-access" {
+		respondWithError(w, http.StatusUnauthorized, errors.New("not access token"))
+		log.Println("expected access token, got refresh token")
 		return
 	}
 
@@ -403,6 +470,97 @@ func (apiCfg apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request
 
 	// respond with acknowledgement that user was updated
 	respondWithJSON(w, 200, removedPassUser)
+}
+
+// POST /api/refresh
+// requires a refresh token and if valid generates and returns an access token
+func (apiCfg apiConfig) refreshTokenHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Request: POST /api/refresh")
+	// retrieve the validated JWT token
+	tokenString, token, err := apiCfg.getJWTAndValidate(r)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err)
+		log.Println(err)
+		return
+	}
+
+	// check issuer
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("could not get issuer from token"))
+		log.Println("could not get issuer from token")
+		return
+	}
+
+	if issuer != "chirpy-refresh" {
+		respondWithError(w, http.StatusUnauthorized, errors.New("not refresh token"))
+		log.Println("expected refresh token, got access token")
+		return
+	}
+
+	// check that there are no revocations for this token in db
+	validityStatus := apiCfg.db.CheckRefreshTokenIsValid(tokenString)
+	if !validityStatus {
+		respondWithError(w, http.StatusUnauthorized, errors.New("refresh token has been revoked"))
+		log.Println("refresh token has been revoked")
+		return
+	}
+
+	// refresh token ok, create a new access token
+	userId := token.Claims.(*jwt.RegisteredClaims).Subject
+
+	newAccessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Issuer:    "chirpy-access",
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(1) * time.Hour)),
+		Subject:   userId,
+	})
+
+	completeAccessToken, _ := newAccessToken.SignedString([]byte(apiCfg.jwtSecret))
+
+	type retVal struct {
+		Token string `json:"token"` // access token
+	}
+
+	// respond with the new access token
+	respondWithJSON(w, 200, retVal{Token: completeAccessToken})
+}
+
+// POST /api/revoke
+// requires a refresh token and if valid revokes it
+func (apiCfg apiConfig) revokeRefreshTokenHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Request: POST /api/revoke")
+	// retrieve the validated JWT token
+	tokenString, token, err := apiCfg.getJWTAndValidate(r)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err)
+		log.Println(err)
+		return
+	}
+
+	// check it is a refresh token
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("could not get issuer from token"))
+		log.Println("could not get issuer from token")
+		return
+	}
+
+	if issuer != "chirpy-refresh" {
+		respondWithError(w, http.StatusUnauthorized, errors.New("not refresh token"))
+		log.Println("expected refresh token, got access token; issuer: ", issuer)
+		return
+	}
+
+	// revoke it
+	apiCfg.db.RevokeRefreshToken(tokenString)
+	// ensure that it is revoked
+	if status := apiCfg.db.CheckRefreshTokenIsValid(tokenString); status {
+		log.Fatal("token should've been revoked but didn't -- need to fix func")
+	}
+
+	// respond with OK
+	respondWithJSON(w, http.StatusOK, "")
 }
 
 // main
@@ -467,8 +625,10 @@ func main() {
 		respondWithJSON(w, 200, chirp)
 	})
 
-	apiRouter.Post("/users", apiCfg.createNewUserHandler) // create a new User
-	apiRouter.Put("/users", apiCfg.updateUserHandler)     // update a User
+	apiRouter.Post("/users", apiCfg.createNewUserHandler)       // create a new User
+	apiRouter.Put("/users", apiCfg.updateUserHandler)           // update a User
+	apiRouter.Post("/refresh", apiCfg.refreshTokenHandler)      // create new access token using a refresh token
+	apiRouter.Post("/revoke", apiCfg.revokeRefreshTokenHandler) // revoke a refresh token
 
 	apiRouter.Post("/login", apiCfg.authenticateUserHandler) // authenticate User
 

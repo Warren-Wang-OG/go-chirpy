@@ -2,10 +2,12 @@ package database
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 
 	"golang.org/x/crypto/bcrypt"
@@ -24,8 +26,9 @@ type DBStructure struct {
 }
 
 type Chirp struct {
-	Id   int    `json:"id"`
-	Body string `json:"body"`
+	Id        int    `json:"id"`
+	Body      string `json:"body"`
+	Author_id int    `json:"author_id"`
 }
 
 type User struct {
@@ -63,16 +66,14 @@ func NewDB(path string) (*DB, error) {
 		return nil, err
 	}
 
-	// create the DB struct
-	dbStruct := DBStructure{
-		Users:  make(map[int]User), // need to allocate mem here to decode JSON into later
-		Chirps: make(map[int]Chirp),
-	}
-
 	db := DB{
-		path:     path,
-		mux:      &sync.RWMutex{},
-		dbstruct: &dbStruct,
+		path: path,
+		mux:  &sync.RWMutex{},
+		dbstruct: &DBStructure{
+			Users:                make(map[int]User), // need to allocate mem here to decode JSON into later, or store stuff
+			Chirps:               make(map[int]Chirp),
+			RevokedRefreshTokens: make(map[string]bool),
+		},
 	}
 
 	// load the JSON file contents into mem
@@ -113,13 +114,40 @@ func (db *DB) CreateNewUser(user User) User {
 	return user
 }
 
+// censors bad words from a string by replacing them with some censor
+// listOfBadWords is a list of strings of bad words to censor
+// s is the string to sensor
+// badWordReplacement is the censor string (replacement val)
+func censorChirp(listOfBadWords []string, s, badWordReplacement string) string {
+	chirpWords := strings.Split(s, " ")
+	for i, word := range chirpWords {
+		for _, badWord := range listOfBadWords {
+			if strings.ToLower(word) == badWord {
+				chirpWords[i] = badWordReplacement
+			}
+		}
+	}
+	return strings.Join(chirpWords, " ")
+}
+
 // CreateChirp creates a new chirp and saves it to disk
-func (db *DB) CreateChirp(body string) Chirp {
+func (db *DB) CreateChirp(newChirp Chirp) (Chirp, error) {
 	// only one Writer at a time can create new Chirps
 	db.mux.Lock()
 	defer db.mux.Unlock()
 
-	// get new id
+	// check if chirp is too long
+	if len(newChirp.Body) > 140 {
+		return newChirp, errors.New("chirp is too long")
+	}
+
+	// censor chirp
+	badWordReplacement := "****"
+	listOfBadWords := []string{"kerfuffle", "sharbert", "fornax"}
+	cleanedChirpBody := censorChirp(listOfBadWords, newChirp.Body, badWordReplacement)
+	newChirp.Body = cleanedChirpBody
+
+	// give chirp a new id
 	maxId := 0
 	for id := range db.dbstruct.Chirps {
 		if id > maxId {
@@ -127,18 +155,13 @@ func (db *DB) CreateChirp(body string) Chirp {
 		}
 	}
 	newId := maxId + 1
-
-	// create the chirp and add it to the db
-	newChirp := Chirp{
-		Id:   newId,
-		Body: body,
-	}
+	newChirp.Id = newId
 
 	// save newChirp to mem and disk
 	db.dbstruct.Chirps[newId] = newChirp
 	db.writeDB()
 
-	return newChirp
+	return newChirp, nil
 }
 
 // UpdateUser updates a user in the database
@@ -159,6 +182,21 @@ func (db *DB) UpdateUser(user User) User {
 	db.writeDB()
 
 	return user
+}
+
+// DeleteChirp deletes a chirp by its id from the database
+func (db *DB) DeleteChirp(chirpId int) error {
+	// delete the chirp if exist
+	if _, ok := db.dbstruct.Chirps[chirpId]; ok {
+		delete(db.dbstruct.Chirps, chirpId)
+	} else {
+		return errors.New("chirp doesn't exist")
+	}
+
+	// save changes to disk
+	db.writeDB()
+
+	return nil
 }
 
 // GetUser returns a SINGLE user from the database, if you know the id

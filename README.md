@@ -9,11 +9,17 @@ RESTful API
 
 `POST /api/login` - Authenticate a User / login
 
-`POST /api/chirps` - Create a Chirp (post)
+`POST /api/refresh` - Use a refresh token to get a new access token
+
+`POST /api/revoke` - Revoke the given refresh token
+
+`POST /api/chirps` - Create a Chirp (post), authenticated endpoint
 
 `GET /api/chirps` - Get all chirps
 
 `GET /api/chirps{id}` - Get a single Chirp by its `id`
+
+`DELETE /api/chirps/{chirpID}` - Delete a chirp by its `id`, authenticated endpoint
 
 `GET /api/healthz` - Readiness Endpoint
 

@@ -94,55 +94,123 @@ func (apiCfg apiConfig) readChirpsHandler(w http.ResponseWriter, r *http.Request
 	respondWithJSON(w, 200, allChirps)
 }
 
-// censors bad words from a string by replacing them with some censor
-// listOfBadWords is a list of strings of bad words to censor
-// s is the string to sensor
-// badWordReplacement is the censor string (replacement val)
-func censorChirp(listOfBadWords []string, s, badWordReplacement string) string {
-	chirpWords := strings.Split(s, " ")
-	for i, word := range chirpWords {
-		for _, badWord := range listOfBadWords {
-			if strings.ToLower(word) == badWord {
-				chirpWords[i] = badWordReplacement
-			}
-		}
+// GET /api/chirps/{id}
+// return just a single chirp
+func (apiCfg apiConfig) readOneChirpHandler(w http.ResponseWriter, r *http.Request) {
+	// get chirp id
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		respondWithError(w, 404, err)
+		return
 	}
-	return strings.Join(chirpWords, " ")
+	// find the chirp from id if possible
+	chirp, err := apiCfg.db.GetChirp(id)
+	if err != nil {
+		respondWithError(w, 404, err)
+		return
+	}
+	// respond with found chirp matching the given id
+	respondWithJSON(w, 200, chirp)
 }
 
 // POST /api/chirps
 // create new Chirps
 func (apiCfg apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Request: POST /api/chirps")
-	type parameters struct {
-		Body string `json:"body"`
+
+	// first authenticate user
+	_, token, err := apiCfg.getJWTAndValidate(r)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, errors.New("invalid token"))
+		log.Println("invalid token")
+		return
+	}
+
+	// get the user id
+	userId, err := token.Claims.GetSubject()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("no id in JWT subject"))
+		log.Println("no id in JWT subject")
+		return
 	}
 
 	// decode the chirp from JSON into go struct
 	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
+	params := database.Chirp{}
+	err = decoder.Decode(&params)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, errors.New("Something went wrong"))
+		respondWithError(w, http.StatusInternalServerError, errors.New("could not decode your chirp JSON"))
 		return
 	}
 
-	// check if chirp is too long
-	if len(params.Body) > 140 {
-		respondWithError(w, http.StatusBadRequest, errors.New("Chirp is too long"))
+	// attach author_id to the chirp
+	authorId, err := strconv.Atoi(userId)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("invalid userid in JWT"))
+		log.Println("invalid userid in JWT")
 		return
 	}
-
-	// censor chirp
-	badWordReplacement := "****"
-	listOfBadWords := []string{"kerfuffle", "sharbert", "fornax"}
-	cleanedChirp := censorChirp(listOfBadWords, params.Body, badWordReplacement)
+	params.Author_id = authorId
 
 	// create the chirp
-	newChirp := apiCfg.db.CreateChirp(cleanedChirp)
+	newChirp, err := apiCfg.db.CreateChirp(params)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err)
+		log.Println(err)
+		return
+	}
 
 	// respond with acknowledgement that chirp was created
 	respondWithJSON(w, 201, newChirp)
+}
+
+// DELETE /api/chirps/{id}
+// delete a chirp by its id, authenticated endpoint
+func (apiCfg apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("DELETE /api/chirps/{id}")
+	// first authenticate user
+	_, token, err := apiCfg.getJWTAndValidate(r)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, errors.New("invalid token"))
+		log.Println("invalid token")
+		return
+	}
+
+	// get the user id
+	userIdString, err := token.Claims.GetSubject()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("no id in JWT subject"))
+		log.Println("no id in JWT subject")
+		return
+	}
+	userId, err := strconv.Atoi(userIdString)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err)
+		log.Println(err)
+		return
+	}
+
+	// get chirp id from url
+	chirpId, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		respondWithError(w, 404, err)
+		return
+	}
+
+	// make sure chirp's author_id is the same as the JWT's id
+	if userId != chirpId {
+		respondWithError(w, http.StatusForbidden, errors.New("you are not the author of that chirp"))
+		return
+	}
+
+	// delete chirp
+	err = apiCfg.db.DeleteChirp(chirpId)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, nil)
 }
 
 // POST /api/healthz
@@ -153,6 +221,7 @@ func readinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+// NOTE: just allows any password for now
 // check passwords, return true if strong else false
 func isPasswordStrong(password string) bool {
 	// // Check length
@@ -222,6 +291,7 @@ func removePasswordFromUser(user database.User) noPasswordUser {
 
 // POST /api/users
 // create a new user
+// returns noPassUser, fields: (id, email )
 func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Request: POST /api/users")
 	// decode the user from JSON into go struct
@@ -260,6 +330,7 @@ func (apiCfg apiConfig) createNewUserHandler(w http.ResponseWriter, r *http.Requ
 
 // POST /api/login
 // login a user
+// returns email, pass, access_token, refresh_token
 func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Request: POST /api/login")
 	type parameters struct {
@@ -273,7 +344,7 @@ func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.R
 	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, errors.New("Something went wrong"))
+		respondWithError(w, http.StatusInternalServerError, errors.New("error decoding your json"))
 		return
 	}
 
@@ -383,13 +454,6 @@ func (apiCfg apiConfig) validateToken(tokenString string) (*jwt.Token, error) {
 		return nil, err
 	}
 
-	// if token.Valid {
-	// 	// log.Println("token is valid, continuing")
-	// } else {
-	// 	// log.Println("token is invalid, exiting")
-	// 	return nil, nil
-	// }
-
 	if !token.Valid {
 		return nil, nil
 	}
@@ -398,6 +462,9 @@ func (apiCfg apiConfig) validateToken(tokenString string) (*jwt.Token, error) {
 
 // to avoid more copy pasting, combine getting and validating
 // JWT token, return both the tokenString, token
+// returns tokenString, token, err
+// if invalid or something else, err is not nil
+// if err == nil, then ok
 func (apiCfg apiConfig) getJWTAndValidate(r *http.Request) (string, *jwt.Token, error) {
 	tokenString, err := getJWTFromHeader(r)
 	if err != nil {
@@ -560,7 +627,7 @@ func (apiCfg apiConfig) revokeRefreshTokenHandler(w http.ResponseWriter, r *http
 	}
 
 	// respond with OK
-	respondWithJSON(w, http.StatusOK, "")
+	respondWithJSON(w, http.StatusOK, nil)
 }
 
 // main
@@ -604,26 +671,10 @@ func main() {
 	// readiness endpoint
 	apiRouter.Get("/healthz", readinessHandler)
 
-	apiRouter.Post("/chirps", apiCfg.createChirpHandler) // create new chirps
-	apiRouter.Get("/chirps", apiCfg.readChirpsHandler)   // get all chirps
-
-	// get a single chirp from id
-	apiRouter.Get("/chirps/{id}", func(w http.ResponseWriter, r *http.Request) {
-		// get chirp id
-		id, err := strconv.Atoi(chi.URLParam(r, "id"))
-		if err != nil {
-			respondWithError(w, 404, err)
-			return
-		}
-		// find the chirp from id if possible
-		chirp, err := apiCfg.db.GetChirp(id)
-		if err != nil {
-			respondWithError(w, 404, err)
-			return
-		}
-		// respond with found chirp matching the given id
-		respondWithJSON(w, 200, chirp)
-	})
+	apiRouter.Post("/chirps", apiCfg.createChirpHandler)        // create new chirps
+	apiRouter.Get("/chirps", apiCfg.readChirpsHandler)          // get all chirps
+	apiRouter.Delete("/chirps/{id}", apiCfg.deleteChirpHandler) // delete a chirp
+	apiRouter.Get("/chirps/{id}", apiCfg.readOneChirpHandler)   // read a single chirp
 
 	apiRouter.Post("/users", apiCfg.createNewUserHandler)       // create a new User
 	apiRouter.Put("/users", apiCfg.updateUserHandler)           // update a User

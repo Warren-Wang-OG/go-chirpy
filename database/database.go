@@ -190,6 +190,10 @@ func (db *DB) UpdateUser(user User) User {
 
 // UgradeUserToChirpyRed upgrades a user to Chirpy Red status
 func (db *DB) UpgradeUserToChirpyRed(userId int) error {
+	// Writer lock
+	db.mux.Lock()
+	defer db.mux.Unlock()
+
 	if user, ok := db.dbstruct.Users[userId]; ok {
 		user.Is_chirpy_red = true
 		db.dbstruct.Users[userId] = user
@@ -201,6 +205,10 @@ func (db *DB) UpgradeUserToChirpyRed(userId int) error {
 
 // DeleteChirp deletes a chirp by its id from the database
 func (db *DB) DeleteChirp(chirpId int) error {
+	// Writer lock
+	db.mux.Lock()
+	defer db.mux.Unlock()
+
 	// delete the chirp if exist
 	if _, ok := db.dbstruct.Chirps[chirpId]; ok {
 		delete(db.dbstruct.Chirps, chirpId)
@@ -259,6 +267,28 @@ func (db *DB) GetChirp(id int) (Chirp, error) {
 	return chirp, nil
 }
 
+// GetChirpsByAuthor returns a list of all the Chirps by the provided author/User
+// returns an empty list if the User has no Chirps or if the User doesn't exist
+func (db *DB) GetChirpsByAuthor(authorId int) []Chirp {
+	// Readers lock
+	db.mux.RLock()
+	defer db.mux.RUnlock()
+
+	chirps := []Chirp{}
+	for _, chirp := range db.dbstruct.Chirps {
+		if chirp.Author_id == authorId {
+			chirps = append(chirps, chirp)
+		}
+	}
+
+	// Sort slice of Chirp objects by ID
+	sort.Slice(chirps, func(i, j int) bool {
+		return chirps[i].Id < chirps[j].Id
+	})
+
+	return chirps
+}
+
 // GetChirps returns all chirps in the database
 // order by id in ascending order
 func (db *DB) GetChirps() []Chirp {
@@ -268,8 +298,8 @@ func (db *DB) GetChirps() []Chirp {
 
 	// get the list of chirps
 	chirps := []Chirp{}
-	for key := range db.dbstruct.Chirps {
-		chirps = append(chirps, db.dbstruct.Chirps[key])
+	for _, chirp := range db.dbstruct.Chirps {
+		chirps = append(chirps, chirp)
 	}
 
 	// Sort slice of Chirp objects by ID

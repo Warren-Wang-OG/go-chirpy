@@ -58,6 +58,8 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.HandlerFunc {
 	})
 }
 
+// GET /admin/metrics
+// returns an html page embedded with the number of times the `/` page was served
 func (cfg *apiConfig) metricsHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Typ", "text/html")
 	w.WriteHeader(http.StatusOK)
@@ -89,8 +91,26 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 
 // GET /api/chirps
 // return the JSON of all the Chirps as a list of Chirps
+// takes an optional query parameter `author_id`, if present only return chirps by that author
+// e.g. GET http://localhost:8080/api/chirps?author_id=1
 func (apiCfg apiConfig) readChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Request: GET /api/chirps")
+
+	// see if author_id is present
+	authorId := r.URL.Query().Get("author_id")
+	if authorId != "" {
+		// return only chirps by author
+		authorIdInt, err := strconv.Atoi(authorId)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, errors.New("no user/author with that id"))
+			log.Println("no user/author with that id")
+			return
+		}
+		respondWithJSON(w, 200, apiCfg.db.GetChirpsByAuthor(authorIdInt))
+		return
+	}
+
+	// return all chirps if optional author_id param not provided
 	allChirps := apiCfg.db.GetChirps()
 	respondWithJSON(w, 200, allChirps)
 }
@@ -222,7 +242,7 @@ func readinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
-// NOTE: just allows any password for now
+// FIXME: uncomment once tests with weak passwords are over
 // check passwords, return true if strong else false
 func isPasswordStrong(password string) bool {
 	// // Check length

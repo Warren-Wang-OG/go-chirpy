@@ -38,6 +38,7 @@ type apiConfig struct {
 	fileserverHits int
 	db             *database.DB
 	jwtSecret      string
+	polkaApiSecret string
 }
 
 type errorBody struct {
@@ -409,6 +410,7 @@ func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.R
 	type retVal struct {
 		Id            int    `json:"id"`
 		Email         string `json:"email"`
+		Is_chirpy_red bool   `json:"is_chirpy_red"`
 		Token         string `json:"token"`         // access token
 		Refresh_token string `json:"refresh_token"` // refresh token
 	}
@@ -416,15 +418,16 @@ func (apiCfg apiConfig) authenticateUserHandler(w http.ResponseWriter, r *http.R
 	respondWithJSON(w, 200, retVal{
 		Id:            foundUser.Id,
 		Email:         foundUser.Email,
+		Is_chirpy_red: foundUser.Is_chirpy_red,
 		Token:         completeAccessToken,
 		Refresh_token: completeRefreshToken,
 	})
 }
 
-// get JWT from the "Authorization" header
-// expects format - Authorization: Bearer <token>
+// get JWT/APIKEY from the "Authorization" header
+// expects format - Authorization: Bearer <token> / Authorization: ApiKey <key>
 // where "Authorization" is the header name
-func getJWTFromHeader(r *http.Request) (string, error) {
+func getAuthTokenFromHeader(r *http.Request) (string, error) {
 	authHeader := r.Header.Get("Authorization")
 	splitAuthHeader := strings.Split(authHeader, " ")
 	if len(splitAuthHeader) != 2 {
@@ -450,7 +453,7 @@ func (apiCfg apiConfig) validateToken(tokenString string) (*jwt.Token, error) {
 	}
 	token, err := jwt.ParseWithClaims(tokenString, claims, keyFunc)
 	if err != nil {
-		log.Println("error parsing token or invalid token", err)
+		log.Println("error parsing token or invalid token: ", err)
 		return nil, err
 	}
 
@@ -466,7 +469,7 @@ func (apiCfg apiConfig) validateToken(tokenString string) (*jwt.Token, error) {
 // if invalid or something else, err is not nil
 // if err == nil, then ok
 func (apiCfg apiConfig) getJWTAndValidate(r *http.Request) (string, *jwt.Token, error) {
-	tokenString, err := getJWTFromHeader(r)
+	tokenString, err := getAuthTokenFromHeader(r)
 	if err != nil {
 		return "", nil, err
 	}
@@ -630,12 +633,61 @@ func (apiCfg apiConfig) revokeRefreshTokenHandler(w http.ResponseWriter, r *http
 	respondWithJSON(w, http.StatusOK, nil)
 }
 
+// POST /api/polka/webhooks
+// upgrade a user to Chirpy Red if they are upgrading
+// requires polka's api key for authentication
+func (apiCfg apiConfig) polkaWebhooksHandler(w http.ResponseWriter, r *http.Request) {
+	// validate polka api key before doing anything
+	apiKeyString, err := getAuthTokenFromHeader(r)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err)
+		return
+	}
+	if apiKeyString != apiCfg.polkaApiSecret {
+		respondWithError(w, http.StatusUnauthorized, nil)
+		return
+	}
+
+	type parameter struct {
+		Event string `json:"event"`
+		Data  struct {
+			User_id int `json:"user_id"`
+		} `json:"data"`
+	}
+
+	// decode the user from JSON into go struct
+	decoder := json.NewDecoder(r.Body)
+	params := parameter{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, errors.New("decoding json went wrong"))
+		return
+	}
+
+	// any event other than user.upgraded, just respond with OK
+	if params.Event != "user.upgraded" {
+		respondWithJSON(w, http.StatusOK, nil)
+		return
+	}
+
+	// event is user is upgraded
+	userId := params.Data.User_id
+	err = apiCfg.db.UpgradeUserToChirpyRed(userId)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, nil)
+}
+
 // main
 func main() {
 	filepathRoot := "."
 	databaseFile := "database.json"
 	godotenv.Load() // load .env
 	jwtSecret := os.Getenv("JWT_SECRET")
+	polkaAPIKeySecret := os.Getenv("POLKA_KEY")
 
 	// if in debug mode, delete the database.json file if it exists
 	dbg := flag.Bool("debug", false, "Enable debug mode")
@@ -644,6 +696,7 @@ func main() {
 	if *dbg {
 		e := os.Remove(databaseFile)
 		if e != nil {
+			log.Println(e)
 			return
 		}
 	}
@@ -657,6 +710,7 @@ func main() {
 		fileserverHits: 0,
 		db:             db,
 		jwtSecret:      jwtSecret,
+		polkaApiSecret: polkaAPIKeySecret,
 	}
 
 	// chi router -- use it to stop extra HTTP methods from working, restrict to GETs
@@ -682,6 +736,8 @@ func main() {
 	apiRouter.Post("/revoke", apiCfg.revokeRefreshTokenHandler) // revoke a refresh token
 
 	apiRouter.Post("/login", apiCfg.authenticateUserHandler) // authenticate User
+
+	apiRouter.Post("/polka/webhooks", apiCfg.polkaWebhooksHandler) // polka is "payment provider", pinging this whenever a user has upgraded to Chirpy Red
 
 	// ------------ api ---------------
 

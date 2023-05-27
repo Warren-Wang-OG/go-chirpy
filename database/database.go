@@ -32,9 +32,10 @@ type Chirp struct {
 }
 
 type User struct {
-	Id       int    `json:"id"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Id            int    `json:"id"`
+	Email         string `json:"email"`
+	Password      string `json:"password"`
+	Is_chirpy_red bool   `json:"is_chirpy_red"`
 }
 
 // CheckRefreshToken checks if a refresh token is revoked
@@ -106,6 +107,9 @@ func (db *DB) CreateNewUser(user User) User {
 		log.Fatal(err)
 	}
 	user.Password = string(hashedPassBytes)
+
+	// default false chirpy red status
+	user.Is_chirpy_red = false
 
 	// save newUser to mem and disk
 	db.dbstruct.Users[newId] = user
@@ -182,6 +186,17 @@ func (db *DB) UpdateUser(user User) User {
 	db.writeDB()
 
 	return user
+}
+
+// UgradeUserToChirpyRed upgrades a user to Chirpy Red status
+func (db *DB) UpgradeUserToChirpyRed(userId int) error {
+	if user, ok := db.dbstruct.Users[userId]; ok {
+		user.Is_chirpy_red = true
+		db.dbstruct.Users[userId] = user
+		db.writeDB()
+		return nil
+	}
+	return errors.New("user not found")
 }
 
 // DeleteChirp deletes a chirp by its id from the database

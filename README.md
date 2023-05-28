@@ -1,5 +1,5 @@
 # Chirpy Web Server
-RESTful API
+This was a very educational guided-project experience in writing HTTP API endpoints in Go. It taught me a lot about how data is communicated between a client and a server using HTTP protocols. 
 
 ## Available Endpoints:
 
@@ -141,7 +141,11 @@ Response Body:
 
 
 ### `GET /api/chirps` - Get all chirps
-- Accepts an optional `author` parameter (e.g. `GET http://localhost:8080/api/chirps?author_id=1` ) and if present, returns all the chirps by the specified author. If author user doesn't exist, returns an empty list.
+Optional query parameters (in url)
+- `author` parameter (e.g. `GET http://localhost:8080/api/chirps?author_id=1` ) and if present, returns all the chirps by the specified author. If author user doesn't exist, returns an empty list.
+- `sort` parameter (e.g. `GET http://localhost:8080/api/chirps?sort=desc`), default is `asc` ascending order, can only specify either `desc` descending or `asc` ascending
+  - of course, can provide both at the same time like `GET http://localhost:8080/api/chirps?sort=asc&author_id=2`
+
 
 Response Body:
 ```json

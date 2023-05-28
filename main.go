@@ -6,13 +6,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi"
 	"github.com/golang-jwt/jwt/v5"
@@ -63,7 +63,7 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.HandlerFunc {
 func (cfg *apiConfig) metricsHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Typ", "text/html")
 	w.WriteHeader(http.StatusOK)
-	htmlTemplate, err := ioutil.ReadFile("./admin/metrics/template.html")
+	htmlTemplate, err := os.ReadFile("./admin/metrics/template.html")
 	if err != nil {
 		log.Fatalf("received err: %v", err)
 	}
@@ -91,10 +91,20 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 
 // GET /api/chirps
 // return the JSON of all the Chirps as a list of Chirps
-// takes an optional query parameter `author_id`, if present only return chirps by that author
+// takes an optional query parameter `author_id` a user id, if present only return chirps by that author
 // e.g. GET http://localhost:8080/api/chirps?author_id=1
+// another optional query parameter `sort`, can be either `asc` or `desc`, sorts chirps by id in that order
+// default id sorting is by `asc` order
 func (apiCfg apiConfig) readChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Request: GET /api/chirps")
+
+	orderScheme := "asc" // default order is ascending
+
+	// see if "sort" param present
+	tmp := r.URL.Query().Get("sort")
+	if tmp == "desc" {
+		orderScheme = "desc"
+	}
 
 	// see if author_id is present
 	authorId := r.URL.Query().Get("author_id")
@@ -106,12 +116,12 @@ func (apiCfg apiConfig) readChirpsHandler(w http.ResponseWriter, r *http.Request
 			log.Println("no user/author with that id")
 			return
 		}
-		respondWithJSON(w, 200, apiCfg.db.GetChirpsByAuthor(authorIdInt))
+		respondWithJSON(w, 200, apiCfg.db.GetChirpsByAuthor(authorIdInt, orderScheme))
 		return
 	}
 
 	// return all chirps if optional author_id param not provided
-	allChirps := apiCfg.db.GetChirps()
+	allChirps := apiCfg.db.GetChirps(orderScheme)
 	respondWithJSON(w, 200, allChirps)
 }
 
@@ -242,61 +252,60 @@ func readinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
-// FIXME: uncomment once tests with weak passwords are over
 // check passwords, return true if strong else false
 func isPasswordStrong(password string) bool {
-	// // Check length
-	// if len(password) < 8 {
-	// 	return false
-	// }
+	// Check length
+	if len(password) < 8 {
+		return false
+	}
 
-	// // Check for uppercase letters
-	// hasUpper := false
-	// for _, c := range password {
-	// 	if unicode.IsUpper(c) {
-	// 		hasUpper = true
-	// 		break
-	// 	}
-	// }
-	// if !hasUpper {
-	// 	return false
-	// }
+	// Check for uppercase letters
+	hasUpper := false
+	for _, c := range password {
+		if unicode.IsUpper(c) {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return false
+	}
 
-	// // Check for lowercase letters
-	// hasLower := false
-	// for _, c := range password {
-	// 	if unicode.IsLower(c) {
-	// 		hasLower = true
-	// 		break
-	// 	}
-	// }
-	// if !hasLower {
-	// 	return false
-	// }
+	// Check for lowercase letters
+	hasLower := false
+	for _, c := range password {
+		if unicode.IsLower(c) {
+			hasLower = true
+			break
+		}
+	}
+	if !hasLower {
+		return false
+	}
 
-	// // Check for digits
-	// hasDigit := false
-	// for _, c := range password {
-	// 	if unicode.IsDigit(c) {
-	// 		hasDigit = true
-	// 		break
-	// 	}
-	// }
-	// if !hasDigit {
-	// 	return false
-	// }
+	// Check for digits
+	hasDigit := false
+	for _, c := range password {
+		if unicode.IsDigit(c) {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		return false
+	}
 
-	// // Check for special characters
-	// hasSpecial := false
-	// for _, c := range password {
-	// 	if unicode.IsPunct(c) || unicode.IsSymbol(c) {
-	// 		hasSpecial = true
-	// 		break
-	// 	}
-	// }
-	// if !hasSpecial {
-	// 	return false
-	// }
+	// Check for special characters
+	hasSpecial := false
+	for _, c := range password {
+		if unicode.IsPunct(c) || unicode.IsSymbol(c) {
+			hasSpecial = true
+			break
+		}
+	}
+	if !hasSpecial {
+		return false
+	}
 
 	// All tests passed
 	return true

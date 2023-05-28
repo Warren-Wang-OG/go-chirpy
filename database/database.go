@@ -269,7 +269,7 @@ func (db *DB) GetChirp(id int) (Chirp, error) {
 
 // GetChirpsByAuthor returns a list of all the Chirps by the provided author/User
 // returns an empty list if the User has no Chirps or if the User doesn't exist
-func (db *DB) GetChirpsByAuthor(authorId int) []Chirp {
+func (db *DB) GetChirpsByAuthor(authorId int, orderScheme string) []Chirp {
 	// Readers lock
 	db.mux.RLock()
 	defer db.mux.RUnlock()
@@ -281,17 +281,23 @@ func (db *DB) GetChirpsByAuthor(authorId int) []Chirp {
 		}
 	}
 
-	// Sort slice of Chirp objects by ID
-	sort.Slice(chirps, func(i, j int) bool {
-		return chirps[i].Id < chirps[j].Id
-	})
+	// Sort slice of Chirp objects by ID, asc or desc
+	if orderScheme == "asc" {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].Id < chirps[j].Id
+		})
+	} else {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].Id > chirps[j].Id
+		})
+	}
 
 	return chirps
 }
 
 // GetChirps returns all chirps in the database
 // order by id in ascending order
-func (db *DB) GetChirps() []Chirp {
+func (db *DB) GetChirps(orderScheme string) []Chirp {
 	// lock for Readers
 	db.mux.RLock()
 	defer db.mux.RUnlock()
@@ -302,10 +308,16 @@ func (db *DB) GetChirps() []Chirp {
 		chirps = append(chirps, chirp)
 	}
 
-	// Sort slice of Chirp objects by ID
-	sort.Slice(chirps, func(i, j int) bool {
-		return chirps[i].Id < chirps[j].Id
-	})
+	// Sort slice of Chirp objects by ID, asc or desc
+	if orderScheme == "asc" {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].Id < chirps[j].Id
+		})
+	} else {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].Id > chirps[j].Id
+		})
+	}
 
 	return chirps
 }

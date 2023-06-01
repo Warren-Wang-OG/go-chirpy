@@ -20,20 +20,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// allows cross origin requests
-func middlewareCors(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 type apiConfig struct {
 	fileserverHits int
 	db             *database.DB
@@ -48,6 +34,20 @@ type errorBody struct {
 type noPasswordUser struct {
 	Id    int    `json:"id"`
 	Email string `json:"email"`
+}
+
+// allows cross origin requests
+func middlewareCors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // metrics - counting landing page server hits
@@ -70,8 +70,6 @@ func (cfg *apiConfig) metricsHandlerFunc(w http.ResponseWriter, r *http.Request)
 	htmlData := fmt.Sprintf(string(htmlTemplate), cfg.fileserverHits)
 	w.Write([]byte(htmlData))
 }
-
-// -------------
 
 // wrapper for respondWithJSON for sending errors as the interface used to be converted to json
 func respondWithError(w http.ResponseWriter, code int, err error) {
@@ -252,6 +250,7 @@ func readinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+// used in createNewUserHandler
 // check passwords, return true if strong else false
 func isPasswordStrong(password string) bool {
 	// Check length
@@ -303,14 +302,10 @@ func isPasswordStrong(password string) bool {
 			break
 		}
 	}
-	if !hasSpecial {
-		return false
-	}
-
-	// All tests passed
-	return true
+	return hasSpecial
 }
 
+// used in createNewUserHandler and updateUserHandler
 // remove the password entry from a user struct, return noPasswordUser struct
 func removePasswordFromUser(user database.User) noPasswordUser {
 	return noPasswordUser{
@@ -710,7 +705,6 @@ func (apiCfg apiConfig) polkaWebhooksHandler(w http.ResponseWriter, r *http.Requ
 	respondWithJSON(w, http.StatusOK, nil)
 }
 
-// main
 func main() {
 	filepathRoot := "."
 	databaseFile := "database.json"
@@ -718,7 +712,7 @@ func main() {
 	jwtSecret := os.Getenv("JWT_SECRET")
 	polkaAPIKeySecret := os.Getenv("POLKA_KEY")
 
-	// if in debug mode, delete the database.json file if it exists
+	// if in debug mode, delete the database.json file if it exists (reset db)
 	dbg := flag.Bool("debug", false, "Enable debug mode")
 	flag.Parse()
 	log.Println("Debug mode (delete previous db):", *dbg)
